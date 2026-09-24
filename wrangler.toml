@@ -1,0 +1,21 @@
+name = "planify-mcp"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+# Settings and secrets are set with `wrangler secret put`, never here, so a
+# deploy never overwrites them and nothing about the account is in the repo:
+#   PLANIFY_URL            where planify is served, e.g. https://planify.example.com
+#   PLANIFY_CLIENT_ID      the Access service token this Worker calls planify with
+#   PLANIFY_CLIENT_SECRET
+#   ACCESS_TEAM_DOMAIN     the Access team this Worker is protected by, e.g. team.cloudflareaccess.com
+#   ACCESS_AUD             the audience tag of this Worker's own Access application
+
+# Counts the day's tool calls, and nothing else: the roadmap lives in planify.
+# Replace database_id with what `wrangler d1 create planify-mcp` prints. Local
+# development works with the placeholder: `--local` keys its file off the binding.
+[[d1_databases]]
+binding = "DB"
+database_name = "planify-mcp"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"

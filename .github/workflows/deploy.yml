@@ -1,0 +1,43 @@
+name: deploy
+
+# Runs the gates in ci.yml, applies the pending D1 migrations, then publishes —
+# in that order, so the Worker never counts calls into a table that does not
+# exist yet. Stays dormant until the repository variable DEPLOY_ENABLED is set
+# to 'true', with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN as secrets.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: vars.DEPLOY_ENABLED == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Apply pending migrations
+        run: npx wrangler d1 migrations apply DB --remote
+
+      - name: Publish
+        run: npx wrangler deploy

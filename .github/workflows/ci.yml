@@ -1,0 +1,21 @@
+name: ci
+
+# Runs on every pull request, by hand, and from deploy.yml — so the gates are
+# defined once and the deploy cannot run without them. It needs no secrets.
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
