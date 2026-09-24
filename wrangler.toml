@@ -37,9 +37,7 @@ database_id = "42be60a0-0d4d-40c8-a1e4-eeff7bfce235"
 migrations_dir = "migrations"
 
 [previews.vars]
-ACCESS_TEAM_DOMAIN = "umbral-app.cloudflareaccess.com"
 PLANIFY_URL = "https://planify-testing.tryumbral.com"
 
 [vars]
-ACCESS_TEAM_DOMAIN = "umbral-app.cloudflareaccess.com"
 PLANIFY_URL = "https://planify.tryumbral.com"
