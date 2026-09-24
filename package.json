@@ -1,0 +1,25 @@
+{
+  "name": "planify-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Planify's roadmap as an MCP server, on Cloudflare Workers",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "wrangler dev --port 8787 --var DEV_IDENTITY:dev@localhost --var PLANIFY_URL:http://127.0.0.1:8788",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply planify-mcp --local",
+    "db:migrate": "wrangler d1 migrations apply planify-mcp --remote"
+  },
+  "dependencies": {
+    "jose": "^6.2.12"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "@types/node": "^22.20.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.131.1"
+  }
+}

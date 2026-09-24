@@ -1,0 +1,60 @@
+name: prod-deploy
+
+# Run by hand from main: deploys to production the commit already on test.
+# Off until the repository variable DEPLOY_ENABLED is 'true'.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tested:
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check the commit is on test
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Production ships from main, not $GITHUB_REF_NAME."
+            exit 1
+          fi
+          tested=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test-deploy.yml \
+            --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
+          if [ "$tested" = 0 ]; then
+            echo "::error::$GITHUB_SHA is not on test yet."
+            exit 1
+          fi
+
+  check:
+    needs: tested
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Apply pending migrations
+        run: npx wrangler d1 migrations apply DB --env "" --remote
+
+      - name: Publish
+        run: npx wrangler deploy --env ""
