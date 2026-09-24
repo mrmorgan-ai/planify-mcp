@@ -39,5 +39,8 @@ migrations_dir = "migrations"
 [previews.vars]
 PLANIFY_URL = "https://planify-testing.tryumbral.com"
 
+[env.test.vars]
+PLANIFY_URL = "https://planify-testing.tryumbral.com"
+
 [vars]
 PLANIFY_URL = "https://planify.tryumbral.com"
