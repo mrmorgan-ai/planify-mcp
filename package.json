@@ -10,8 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "db:migrate:local": "wrangler d1 migrations apply planify-mcp --local",
-    "db:migrate": "wrangler d1 migrations apply planify-mcp --remote",
-    "deploy": "wrangler deploy"
+    "db:migrate": "wrangler d1 migrations apply planify-mcp --remote"
   },
   "dependencies": {
     "jose": "^6.2.12"

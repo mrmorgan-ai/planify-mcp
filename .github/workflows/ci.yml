@@ -1,7 +1,6 @@
 name: ci
 
-# Runs on every pull request, by hand, and from deploy.yml — so the gates are
-# defined once and the deploy cannot run without them. It needs no secrets.
+# Typecheck and tests. Runs on pull requests and before every deploy.
 on:
   pull_request:
   workflow_dispatch:
