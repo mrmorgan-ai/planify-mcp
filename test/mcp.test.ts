@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { MCP_DAILY_CALLS, PROTOCOL_VERSIONS, handleMcp } from '../src/mcp'
+import { MCP_DAILY_CALLS, MCP_DAILY_CALLS_EACH, PROTOCOL_VERSIONS, handleMcp } from '../src/mcp'
 import { PlanifyError, type Planify } from '../src/planify'
 import type { AppState, Item } from '../src/types'
 import { sqliteD1 } from './sqliteD1'
 
 const NOW = new Date('2030-01-10T09:00:00Z')
+const PERSON = 'someone@example.com'
 
 function item(id: string, phase: number, sortOrder: number, extra: Partial<Item> = {}): Item {
   return {
@@ -84,7 +85,7 @@ function fakePlanify(answer: (call: Call) => unknown = () => WORLD) {
 }
 
 let next = 0
-function server(planify: Planify = fakePlanify().planify) {
+function server(planify: Planify = fakePlanify().planify, principal = PERSON) {
   const { db, sqlite } = sqliteD1()
   const post = (body: unknown, headers: Record<string, string> = {}, now = NOW) =>
     handleMcp(
@@ -95,6 +96,7 @@ function server(planify: Planify = fakePlanify().planify) {
       }),
       db,
       planify,
+      principal,
       now,
     )
   const rpc = async (method: string, params?: unknown, now = NOW) =>
@@ -118,7 +120,7 @@ describe('the protocol', () => {
     const asked = await rpc('initialize', { protocolVersion: '2025-03-26' })
     expect(asked.result).toMatchObject({
       protocolVersion: '2025-03-26',
-      capabilities: { tools: {} },
+      capabilities: { tools: {}, prompts: {} },
       serverInfo: { name: 'planify' },
     })
     expect(
@@ -170,6 +172,7 @@ describe('the protocol', () => {
       new Request('https://planify-mcp.example.workers.dev/mcp'),
       db,
       fakePlanify().planify,
+      PERSON,
     )
     expect(get.status).toBe(405)
     const ping = { jsonrpc: '2.0', id: 1, method: 'ping' }
@@ -360,30 +363,108 @@ describe('refusals', () => {
   })
 })
 
-describe('the daily cap', () => {
-  it(`stops at ${MCP_DAILY_CALLS} calls a day, and starts again the next`, async () => {
+describe('the daily caps', () => {
+  const count = (sqlite: ReturnType<typeof server>['sqlite'], principal: string) =>
+    sqlite.prepare('SELECT day, calls FROM mcp_usage WHERE principal = ?').get(principal)
+
+  it(`stops one person at ${MCP_DAILY_CALLS_EACH} calls a day, and not the others`, async () => {
+    const { planify, calls } = fakePlanify()
+    const { sqlite, db, call } = server(planify)
+    sqlite.exec(
+      `INSERT INTO mcp_usage (principal, day, calls) VALUES ('${PERSON}', '2030-01-10', ${MCP_DAILY_CALLS_EACH})`,
+    )
+
+    expect((await call('get_roadmap')).refused).toMatch(/1000 tool calls a day, and yours/)
+    expect(calls).toEqual([])
+
+    const someoneElse = await handleMcp(
+      new Request('https://planify-mcp.example.workers.dev/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_roadmap' } }),
+      }),
+      db,
+      planify,
+      'other@example.com',
+      NOW,
+    )
+    const answer = (await someoneElse.json()) as { result: { isError?: boolean } }
+    expect(answer.result.isError).toBeUndefined()
+  })
+
+  it(`stops everyone at ${MCP_DAILY_CALLS} calls a day in all`, async () => {
     const { planify, calls } = fakePlanify()
     const { sqlite, call } = server(planify)
     sqlite.exec(
-      `INSERT INTO mcp_usage (id, day, calls) VALUES (1, '2030-01-10', ${MCP_DAILY_CALLS})`,
+      `INSERT INTO mcp_usage (principal, day, calls) VALUES ('*', '2030-01-10', ${MCP_DAILY_CALLS})`,
     )
-
-    expect((await call('get_roadmap')).refused).toMatch(/2000 tool calls a day/)
+    expect((await call('get_roadmap')).refused).toMatch(/2000 tool calls a day in all/)
     expect(calls).toEqual([])
+  })
+
+  it('starts both counts again the next day', async () => {
+    const { planify } = fakePlanify()
+    const { sqlite, call } = server(planify)
+    sqlite.exec(
+      `INSERT INTO mcp_usage (principal, day, calls) VALUES
+         ('${PERSON}', '2030-01-10', ${MCP_DAILY_CALLS_EACH}), ('*', '2030-01-10', ${MCP_DAILY_CALLS})`,
+    )
     expect(await call('get_roadmap', {}, new Date('2030-01-11T00:00:01Z'))).toMatchObject({
       revision: 7,
     })
-    expect(sqlite.prepare('SELECT day, calls FROM mcp_usage').get()).toEqual({
-      day: '2030-01-11',
-      calls: 1,
-    })
+    expect(count(sqlite, PERSON)).toEqual({ day: '2030-01-11', calls: 1 })
+    expect(count(sqlite, '*')).toEqual({ day: '2030-01-11', calls: 1 })
   })
 
-  it('counts tool calls only', async () => {
+  it('counts tool calls only, for the caller and in all', async () => {
     const { sqlite, rpc, call } = server()
     await rpc('tools/list')
+    await rpc('prompts/list')
     await call('get_roadmap')
     await call('get_roadmap')
-    expect(sqlite.prepare('SELECT calls FROM mcp_usage').get()).toEqual({ calls: 2 })
+    expect(count(sqlite, PERSON)).toEqual({ day: '2030-01-10', calls: 2 })
+    expect(count(sqlite, '*')).toEqual({ day: '2030-01-10', calls: 2 })
+  })
+})
+
+describe('the prompts', () => {
+  it('lists plan_from_spec with its arguments and without its code', async () => {
+    const { rpc } = server()
+    const prompts = (await rpc('prompts/list')).result!.prompts as Array<Record<string, unknown>>
+    expect(prompts.map((prompt) => prompt.name)).toEqual(['plan_from_spec'])
+    expect(prompts[0]!.arguments).toEqual([
+      expect.objectContaining({ name: 'goal', required: true }),
+      expect.objectContaining({ name: 'constraints', required: false }),
+    ])
+    expect(prompts[0]!.render).toBeUndefined()
+  })
+
+  it('writes the goal and the constraints into the method', async () => {
+    const { rpc } = server()
+    const got = await rpc('prompts/get', {
+      name: 'plan_from_spec',
+      arguments: { goal: 'Ship a small compiler', constraints: '6 hours a week from March' },
+    })
+    const [message] = got.result!.messages as Array<{ role: string; content: { text: string } }>
+    expect(message!.role).toBe('user')
+    expect(message!.content.text).toContain('<goal>\nShip a small compiler\n</goal>')
+    expect(message!.content.text).toContain('6 hours a week from March')
+    expect(message!.content.text).toContain('start_draft')
+
+    const bare = await rpc('prompts/get', { name: 'plan_from_spec', arguments: { goal: 'X' } })
+    const text = (bare.result!.messages as Array<{ content: { text: string } }>)[0]!.content.text
+    expect(text).not.toContain('<constraints>')
+  })
+
+  it('refuses a prompt it does not have, or one without its goal', async () => {
+    const { rpc } = server()
+    expect((await rpc('prompts/get', { name: 'nothing' })).error?.code).toBe(-32602)
+    expect((await rpc('prompts/get', { name: 'plan_from_spec' })).error).toMatchObject({
+      code: -32602,
+      message: 'goal is required',
+    })
+    expect(
+      (await rpc('prompts/get', { name: 'plan_from_spec', arguments: { goal: 3 } })).error?.message,
+    ).toBe('goal must be a string')
   })
 })

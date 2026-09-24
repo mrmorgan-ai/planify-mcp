@@ -27,6 +27,10 @@ do I get this JSON in and out?".
   leaves free, skipping pauses.
 - **Leaves progress alone.** Ticking items off and logging hours stay with the
   person, in the app.
+- **Serves each person their own roadmap.** Whoever signs in reaches their
+  roadmap and no one else's.
+- **Brings the method along.** The `plan_from_spec` prompt walks an agent through
+  turning what someone wants to achieve into a plan they can follow.
 
 Every change an agent makes shows up in the app's history, and can be undone
 there like any other.
@@ -55,16 +59,38 @@ change with `dryRun`, then the same change for real. For a larger replan:
 `start_draft`, the changes with `draft: true`, then `publish_draft` — dry run
 first.
 
+## The prompt
+
+`plan_from_spec` takes a `goal` — a sentence, or a whole spec pasted in — and
+optionally `constraints`, what is known about the person's time. It is the
+method for a new roadmap, or a new phase, in six steps:
+
+1. **Outcome and proof.** One sentence of what they will be able to do, and how
+   someone else could check it. That proof closes the last phase.
+2. **Budget.** Hours a week, start date, weeks off, deadline. When the goal does
+   not fit, scope or the date moves, never the hours.
+3. **Skill map.** Four to six axes and a few concrete skills under each.
+4. **Phases.** At most six, each ending in something built or measured.
+5. **Units.** Courses, books, projects, exams and weekly practice, named
+   exactly, sized in hours, none longer than a week.
+6. **Place, review, publish.** In a draft, with the generators placing the units
+   in the free hours, validated, shown to the person, and published only when
+   they agree.
+
+The prompt guides; the tools do the work, and nothing reaches the live roadmap
+until the person agrees.
+
 ## Limits
 
-The server takes 2,000 tool calls a day in all. Past that, calls are refused
-until 00:00 UTC.
+Each person gets 1,000 tool calls a day, and the server 2,000 in all. Past
+either, calls are refused until 00:00 UTC. Prompts do not count.
 
 ## Connect
 
 You need two things from whoever runs your Planify: the server's address, and a
-service token — a client id and a client secret, sent as two headers on every
-request. Keep it to yourself.
+service token of your own — a client id and a client secret. The token is how
+the server knows whose roadmap to open, so keep it to yourself. It is sent as
+two headers on every request.
 
 **Claude Code**
 
@@ -86,7 +112,11 @@ env_http_headers = { "CF-Access-Client-Id" = "PLANIFY_CLIENT_ID", "CF-Access-Cli
 the same way: POST to `/mcp`, one JSON-RPC message per request, protocol versions
 2025-06-18, 2025-03-26 and 2024-11-05.
 
-Then start with `get_roadmap`.
+Then ask your client for the `plan_from_spec` prompt with your goal, or start
+with `get_roadmap`.
+
+If the server answers that there is no roadmap for you, the message names the id
+you signed in as. Send that to whoever runs your Planify.
 
 ## License
 

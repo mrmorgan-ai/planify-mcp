@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { generateKeyPair, SignJWT, type CryptoKey, type JWTPayload } from 'jose'
-import { authorize, type AccessEnv } from '../src/access'
+import { authenticate, type AccessEnv } from '../src/access'
 
 const TEAM = 'team.cloudflareaccess.com'
 const AUD = 'app-audience-tag'
@@ -35,14 +35,24 @@ function request(url: string, jwt?: string): Request {
   return new Request(url, { headers: jwt ? { 'Cf-Access-Jwt-Assertion': jwt } : {} })
 }
 
-describe('authorize', () => {
-  it('lets through a person signed in by Access', async () => {
-    expect(await authorize(request(DEPLOYED, await token()), ENV, keys)).toBeNull()
+/** The status a refusal answers with, or the caller when there is none. */
+const statusOf = (answer: Awaited<ReturnType<typeof authenticate>>) =>
+  answer instanceof Response ? answer.status : answer
+
+describe('authenticate', () => {
+  it('names a person signed in by Access by their email', async () => {
+    expect(await authenticate(request(DEPLOYED, await token()), ENV, keys)).toEqual({
+      principal: 'owner@example.com',
+      local: false,
+    })
   })
 
-  it('lets through a service token, which carries a client id instead of an email', async () => {
+  it('names a service token by its client id, which it carries instead of an email', async () => {
     const jwt = await token({ common_name: 'client-id.access' })
-    expect(await authorize(request(DEPLOYED, jwt), ENV, keys)).toBeNull()
+    expect(await authenticate(request(DEPLOYED, jwt), ENV, keys)).toEqual({
+      principal: 'client-id.access',
+      local: false,
+    })
   })
 
   it.each([
@@ -56,24 +66,22 @@ describe('authorize', () => {
     ['an expired token', () => token(undefined, { expires: '-1m' })],
     ['a token that names nobody', () => token({})],
   ])('refuses %s with 401', async (_, make) => {
-    const response = await authorize(request(DEPLOYED, await make()), ENV, keys)
-    expect(response?.status).toBe(401)
+    expect(statusOf(await authenticate(request(DEPLOYED, await make()), ENV, keys))).toBe(401)
   })
 
   it('fails closed when the deployment does not say which Access application to trust', async () => {
-    const response = await authorize(request(DEPLOYED, await token()), {}, keys)
-    expect(response?.status).toBe(500)
+    expect(statusOf(await authenticate(request(DEPLOYED, await token()), {}, keys))).toBe(500)
   })
 
   it('trusts the development identity on a loopback host', async () => {
     const local = { ...ENV, DEV_IDENTITY: 'dev@localhost' }
-    expect(await authorize(request('http://127.0.0.1:8787/mcp'), local, keys)).toBeNull()
-    expect(await authorize(request('http://localhost:8787/mcp'), local, keys)).toBeNull()
+    const dev = { principal: 'dev@localhost', local: true }
+    expect(await authenticate(request('http://127.0.0.1:8787/mcp'), local, keys)).toEqual(dev)
+    expect(await authenticate(request('http://localhost:8787/mcp'), local, keys)).toEqual(dev)
   })
 
   it('ignores the development identity anywhere else', async () => {
     const leaked = { ...ENV, DEV_IDENTITY: 'dev@localhost' }
-    const response = await authorize(request(DEPLOYED), leaked, keys)
-    expect(response?.status).toBe(401)
+    expect(statusOf(await authenticate(request(DEPLOYED), leaked, keys))).toBe(401)
   })
 })

@@ -5,6 +5,13 @@ export type PlanifyEnv = {
   PLANIFY_CLIENT_SECRET?: string
 }
 
+/**
+ * The header naming the person this server acts for. planify honours it only
+ * from a principal it lists as a delegate — this server's service token — and
+ * answers with that person's roadmap.
+ */
+export const ON_BEHALF_OF = 'X-Planify-On-Behalf-Of'
+
 /** A request planify refused, with what it said. */
 export class PlanifyError extends Error {
   constructor(
@@ -21,16 +28,24 @@ export type Planify = (method: string, path: string, body?: unknown) => Promise<
 
 /**
  * Calls planify with the Access service token, the way a signed-in person's
- * browser would with its cookie. Access answers a request it refuses with a
- * redirect to its sign-in page, not an error, so redirects are not followed:
- * one means the token was not accepted.
+ * browser would with its cookie, on behalf of the person who called this
+ * server: planify answers with their roadmap and no one else's. Access answers
+ * a request it refuses with a redirect to its sign-in page, not an error, so
+ * redirects are not followed: one means the token was not accepted.
  */
-export function planifyClient(env: PlanifyEnv, fetcher: typeof fetch = fetch): Planify {
+export function planifyClient(
+  env: PlanifyEnv,
+  onBehalfOf: string,
+  fetcher: typeof fetch = fetch,
+): Planify {
   return async (method, path, body) => {
     if (!env.PLANIFY_URL) {
       throw new PlanifyError('PLANIFY_URL is not set on this Worker', 500)
     }
-    const headers: Record<string, string> = { accept: 'application/json' }
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+      [ON_BEHALF_OF]: onBehalfOf,
+    }
     if (body !== undefined) headers['content-type'] = 'application/json'
     if (env.PLANIFY_CLIENT_ID && env.PLANIFY_CLIENT_SECRET) {
       headers['CF-Access-Client-Id'] = env.PLANIFY_CLIENT_ID

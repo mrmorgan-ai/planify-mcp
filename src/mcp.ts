@@ -1,4 +1,5 @@
 import { PlanifyError, type Planify } from './planify'
+import { PROMPTS, PromptError, renderPrompt } from './prompts'
 import { TOOLS, ToolError } from './tools'
 
 // The Model Context Protocol over plain HTTP: one JSON-RPC message per POST,
@@ -13,25 +14,36 @@ import { TOOLS, ToolError } from './tools'
 export const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05']
 
 /**
- * Tool calls a day, across every agent. Each reads the roadmap in planify's
- * database, and an agent stuck in a loop would otherwise spend the database's
- * daily reads — the app's too.
+ * Tool calls a day, across every agent and every person. Each reads the roadmap
+ * in planify's database, and an agent stuck in a loop would otherwise spend the
+ * database's daily reads — the app's too.
  */
 export const MCP_DAILY_CALLS = 2000
+
+/**
+ * Tool calls a day for one principal, so one person's looping agent leaves the
+ * rest of the day's calls to everyone else.
+ */
+export const MCP_DAILY_CALLS_EACH = 1000
 
 const INSTRUCTIONS = `Planify is a study roadmap: items with planned dates in phases, dependencies, pauses and a weekly hours capacity. Dates are recomputed from the plan and from progress.
 Read with get_roadmap first, then list_items. Every write takes the revision the last read answered and is refused if the roadmap changed since: read again and retry.
 Dry-run every write first (dryRun: true) and check introducedErrors: a write that brings in an error is refused. Warnings never block.
 For a change of several steps, start_draft, make them with draft: true, then publish_draft — dry run first, then with the live revision it answers.
-Progress (ticking items off, hours) is the person's, and is not changed here.`
+Progress (ticking items off, hours) is the person's, and is not changed here.
+Each person reaches their own roadmap only. For a new or empty roadmap, the plan_from_spec prompt walks through turning a goal into a plan.`
 
 type Message = { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown }
 
-/** Answers one MCP request. Access has already let it through. */
+/**
+ * Answers one MCP request. Access has already let it through, and `principal`
+ * is who it signed in: `planify` already acts on their behalf.
+ */
 export async function handleMcp(
   request: Request,
   db: D1Database,
   planify: Planify,
+  principal: string,
   now: Date = new Date(),
 ): Promise<Response> {
   if (request.method !== 'POST') {
@@ -79,7 +91,7 @@ export async function handleMcp(
           typeof asked === 'string' && PROTOCOL_VERSIONS.includes(asked)
             ? asked
             : PROTOCOL_VERSIONS[0],
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
         serverInfo: { name: 'planify', title: 'Planify', version: '0.1.0' },
         instructions: INSTRUCTIONS,
       })
@@ -89,7 +101,20 @@ export async function handleMcp(
     case 'tools/list':
       return result(id, { tools: TOOLS.map(({ run: _run, ...tool }) => tool) })
     case 'tools/call':
-      return callTool(id, params, db, planify, now)
+      return callTool(id, params, db, planify, principal, now)
+    case 'prompts/list':
+      return result(id, { prompts: PROMPTS.map(({ render: _render, ...prompt }) => prompt) })
+    case 'prompts/get':
+      try {
+        const { prompt, text } = renderPrompt(params.name, params.arguments)
+        return result(id, {
+          description: prompt.description,
+          messages: [{ role: 'user', content: { type: 'text', text } }],
+        })
+      } catch (error) {
+        if (error instanceof PromptError) return rpcError(id, -32602, error.message)
+        throw error
+      }
     default:
       return rpcError(id, -32601, `No such method: ${message.method}`)
   }
@@ -100,6 +125,7 @@ async function callTool(
   params: Record<string, unknown>,
   db: D1Database,
   planify: Planify,
+  principal: string,
   now: Date,
 ): Promise<Response> {
   const tool = TOOLS.find((each) => each.name === params.name)
@@ -109,11 +135,18 @@ async function callTool(
     return rpcError(id, -32602, 'arguments must be an object')
   }
 
-  const calls = await countCall(db, now)
-  if (calls > MCP_DAILY_CALLS) {
+  const { total, mine } = await countCall(db, principal, now)
+  if (mine > MCP_DAILY_CALLS_EACH) {
     return toolResult(
       id,
-      `The roadmap takes ${MCP_DAILY_CALLS} tool calls a day, and today's are used up. It starts again at 00:00 UTC.`,
+      `Each person gets ${MCP_DAILY_CALLS_EACH} tool calls a day, and yours are used up. They start again at 00:00 UTC.`,
+      true,
+    )
+  }
+  if (total > MCP_DAILY_CALLS) {
+    return toolResult(
+      id,
+      `Planify takes ${MCP_DAILY_CALLS} tool calls a day in all, and today's are used up. It starts again at 00:00 UTC.`,
       true,
     )
   }
@@ -125,20 +158,32 @@ async function callTool(
   }
 }
 
-/** Counts a call against today's, and answers how many there have been. */
-async function countCall(db: D1Database, now: Date): Promise<number> {
+/** The row that counts everyone's calls together. No principal can be named this. */
+const EVERYONE = '*'
+
+/**
+ * Counts a call against today's, for the principal and in all, in one
+ * statement, and answers how many there have been of each. A new day starts
+ * both counts again.
+ */
+async function countCall(
+  db: D1Database,
+  principal: string,
+  now: Date,
+): Promise<{ total: number; mine: number }> {
   const day = now.toISOString().slice(0, 10)
-  const row = await db
+  const { results } = await db
     .prepare(
-      `INSERT INTO mcp_usage (id, day, calls) VALUES (1, ?, 1)
-       ON CONFLICT(id) DO UPDATE SET
+      `INSERT INTO mcp_usage (principal, day, calls) VALUES (?, ?, 1), (?, ?, 1)
+       ON CONFLICT(principal) DO UPDATE SET
          calls = CASE WHEN day = excluded.day THEN calls + 1 ELSE 1 END,
          day = excluded.day
-       RETURNING calls`,
+       RETURNING principal, calls`,
     )
-    .bind(day)
-    .first<{ calls: number }>()
-  return row?.calls ?? 1
+    .bind(principal, day, EVERYONE, day)
+    .all<{ principal: string; calls: number }>()
+  const count = (who: string) => results.find((row) => row.principal === who)?.calls ?? 1
+  return { total: count(EVERYONE), mine: count(principal) }
 }
 
 /**
@@ -168,7 +213,9 @@ function refusalOf(error: unknown): string {
       })),
     })
   }
-  if (status === 400 || status === 404) return message
+  // 403: planify has no roadmap for this person, or does not list this server
+  // as a delegate. Its message says which, and names who asked.
+  if (status === 400 || status === 403 || status === 404) return message
   return `planify could not do it (HTTP ${status}): ${message}`
 }
 
