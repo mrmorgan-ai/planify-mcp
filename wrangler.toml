@@ -35,3 +35,9 @@ binding = "DB"
 database_name = "planify-mcp-test"
 database_id = "42be60a0-0d4d-40c8-a1e4-eeff7bfce235"
 migrations_dir = "migrations"
+
+[previews.vars]
+PLANIFY_URL = "https://planify-testing.tryumbral.com"
+
+[vars]
+PLANIFY_URL = "https://planify.tryumbral.com"
