@@ -87,65 +87,34 @@ either, calls are refused until 00:00 UTC. Prompts do not count.
 
 ## Connect
 
-### 1. Get your access
+You need an invitation first: whoever runs your Planify adds your email and
+gives you a roadmap. Then you sign in with that email. There is no key or
+password to keep.
 
-You need two things from whoever runs your Planify:
-
-- **The server's address**, like `https://<planify-mcp host>/mcp`.
-- **A service token of your own**: a client id, which ends in `.access`, and a
-  client secret.
-
-The token is how the server knows whose roadmap to open, so keep it to yourself
-and never commit it. It is sent as two headers on every request:
-`CF-Access-Client-Id` and `CF-Access-Client-Secret`.
-
-Keep them in the environment, not in a file that is tracked:
+### Claude Code
 
 ```sh
-export PLANIFY_MCP_URL="https://<planify-mcp host>/mcp"
-export PLANIFY_CLIENT_ID="<client id>"
-export PLANIFY_CLIENT_SECRET="<client secret>"
+claude mcp add --transport http planify https://<planify-mcp host>/mcp
 ```
 
-### 2. Check that it answers
+Start a session, run `/mcp`, choose `planify` and then **Authenticate**. Your
+browser opens a sign-in page: enter your email, then the code it sends you. Back
+in Claude Code, `planify` shows as connected. The sign-in lasts a few hours, and
+Claude Code renews it; when it cannot, `/mcp` asks you to sign in again.
 
-```sh
-curl -s "$PLANIFY_MCP_URL" \
-  -H "CF-Access-Client-Id: $PLANIFY_CLIENT_ID" \
-  -H "CF-Access-Client-Secret: $PLANIFY_CLIENT_SECRET" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}'
-```
+### Codex and other clients
 
-A JSON answer with `"serverInfo":{"name":"planify",...}` means you are in. An
-HTML `302` means the token is not allowed on this server: see
-[Troubleshooting](#troubleshooting).
+Any MCP client that speaks Streamable HTTP and supports OAuth sign-in connects
+with just the address, `https://<planify-mcp host>/mcp`, and opens the same
+browser sign-in. The server answers protocol versions 2025-06-18, 2025-03-26
+and 2024-11-05.
 
-### 3. Add it to your client
+### Scripts and CI
 
-**Claude Code**
-
-```sh
-claude mcp add --transport http planify "$PLANIFY_MCP_URL" \
-  --header "CF-Access-Client-Id: $PLANIFY_CLIENT_ID" \
-  --header "CF-Access-Client-Secret: $PLANIFY_CLIENT_SECRET"
-```
-
-Then run `claude mcp list`: `planify` should show as connected. Inside a
-session, `/mcp` lists its tools.
-
-**Codex**, in `~/.codex/config.toml`, with the token read from the environment:
-
-```toml
-[mcp_servers.planify]
-url = "https://<planify-mcp host>/mcp"
-env_http_headers = { "CF-Access-Client-Id" = "PLANIFY_CLIENT_ID", "CF-Access-Client-Secret" = "PLANIFY_CLIENT_SECRET" }
-```
-
-**Any other MCP client** that speaks Streamable HTTP and can send headers works
-the same way: POST to `/mcp`, one JSON-RPC message per request, protocol versions
-2025-06-18, 2025-03-26 and 2024-11-05.
+A script cannot sign in with a browser. It uses a service token instead, a
+client id and secret sent as the `CF-Access-Client-Id` and
+`CF-Access-Client-Secret` headers on every request. Ask whoever runs your
+Planify for one. Keep it out of any tracked file.
 
 ## Use it
 
@@ -175,6 +144,8 @@ What to expect:
   can undo it like any other.
 - **Progress stays yours.** The agent will not tick items off or log hours. Do
   that in the app.
+- **Only your roadmap.** The server acts for whoever signed in, and planify
+  answers with that person's roadmap and no one else's.
 
 To start a new plan, ask for the prompt by name. In Claude Code it is
 `/mcp__planify__plan_from_spec`, and it asks for your goal. Any client that lists
@@ -184,46 +155,12 @@ MCP prompts offers `plan_from_spec` the same way.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `302` or an HTML login page from the server | The token is valid but is not allowed on this server's Access application, or is misspelled | Ask whoever runs your Planify to add your token to a **Service Auth** policy on it |
-| `401 Sign in through Cloudflare Access` | The request got through, but the token could not be verified | Check that the two headers are sent, and that the address is this deployment's own |
-| `500 Sign-in is not configured on this deployment` | The server is missing `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` | Tell whoever runs it; nothing to change on your side |
-| A refusal from planify naming who asked | You signed in, but planify has no roadmap for that id, or does not list this server as a delegate. The message says which | Send it, id included, to whoever runs your Planify |
+| The sign-in page does not accept your email | You are not invited to this server | Ask whoever runs your Planify to add your email |
+| "There is no roadmap for" your email | You signed in, but no roadmap is yours yet | Ask whoever runs your Planify to create one for you |
+| `/mcp` asks you to authenticate again | Your sign-in expired | Sign in again |
 | "It was made from an old revision" | The plan changed after the agent read it | Nothing: the agent reads again and retries |
-| "planify's Access refused this server's service token" | The server cannot reach planify | Tell whoever runs it: the server's own token or policy needs fixing |
 | Calls refused until 00:00 UTC | You used your 1,000 calls for the day, or the server its 2,000 | Wait, or stop any agent that is looping |
-
-## Run your own
-
-For whoever deploys the server. Settings and secrets are set on the Worker, never
-in the repository, so a deploy never overwrites them.
-
-1. **Deploy.** `npx wrangler d1 create planify-mcp` (and `planify-mcp-test`), put
-   the ids in `wrangler.toml`, then `npx wrangler deploy` (add `--env test` for
-   the test Worker). In CI, every push to main deploys the test Worker, and
-   `prod-deploy.yml` takes the same commit to production by hand.
-2. **Serve it on your own domain.** The server is off `workers.dev`. In the
-   dashboard, open the Worker, then Settings, Domains & Routes, Add, Custom
-   domain.
-3. **Protect that domain.** In Zero Trust, add a self-hosted Access application
-   for the hostname. Its Application Audience tag is `ACCESS_AUD`. Add a
-   **Service Auth** policy for the tokens allowed in, one per person.
-4. **Set the Worker's settings**, in the dashboard under Settings, Variables and
-   Secrets, as type Secret, or with `npx wrangler secret put <NAME>` (add
-   `--env test` for the test Worker):
-
-   | Name | Value |
-   |---|---|
-   | `PLANIFY_URL` | Where planify is served, like `https://planify.example.com` |
-   | `PLANIFY_CLIENT_ID`, `PLANIFY_CLIENT_SECRET` | A service token the server calls planify with. Planify's Access application must allow it in a Service Auth policy. Not the same token you hand to a person |
-   | `ACCESS_TEAM_DOMAIN` | Your Access team, like `team.cloudflareaccess.com` |
-   | `ACCESS_AUD` | The audience tag from step 3 |
-
-5. **Check it** with the request in [Check that it answers](#2-check-that-it-answers),
-   then `tools/list` and `get_roadmap`.
-
-To run it on your machine, `make start` serves it on `127.0.0.1:8787` against a
-local database, with no Access; `make stop` ends it. It calls the planify that
-planify's own `make start` runs, or the one in `PLANIFY_URL`.
+| Any other error that names the server's setup | Something on the server's side, not your access | Tell whoever runs your Planify |
 
 ## License
 
