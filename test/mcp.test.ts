@@ -1,26 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import { MCP_DAILY_CALLS, MCP_DAILY_CALLS_EACH, PROTOCOL_VERSIONS, handleMcp } from '../src/mcp'
 import { PlanifyError, type Planify } from '../src/planify'
-import type { AppState, Item } from '../src/types'
+import type { AppState, Story, Task } from '../src/types'
 import { sqliteD1 } from './sqliteD1'
 
 const NOW = new Date('2030-01-10T09:00:00Z')
 const PERSON = 'someone@example.com'
 
-function item(id: string, phase: number, sortOrder: number, extra: Partial<Item> = {}): Item {
+function task(id: string, phase: number, sortOrder: number, extra: Partial<Task> = {}): Task {
   return {
     id,
     name: id,
-    type: 'Course',
     phase,
     skills: ['A skill'],
-    workItemId: null,
+    storyId: `phase-${phase}`,
     baselineStartDate: '2030-01-07',
     baselineEndDate: '2030-01-09',
     projectedStartDate: '2030-01-07',
     projectedEndDate: '2030-01-09',
     dependsOn: [],
-    price: '',
     link: null,
     resources: [],
     duration: '~3h',
@@ -32,6 +30,10 @@ function item(id: string, phase: number, sortOrder: number, extra: Partial<Item>
     sortOrder,
     ...extra,
   }
+}
+
+function story(id: string, phase: number, extra: Partial<Story> = {}): Story {
+  return { id, name: id, type: null, phase, featureId: null, price: '', doneWhen: '', ...extra }
 }
 
 const WORLD: AppState = {
@@ -50,23 +52,31 @@ const WORLD: AppState = {
     dimensions: ['An axis'],
     skillDimension: { 'A skill': 'An axis' },
   },
-  workItems: [],
-  items: [
-    item('b', 1, 2, { baselineStartDate: '2030-01-10', baselineEndDate: '2030-01-12' }),
-    item('a', 1, 1, { state: 'done' }),
-    item('c', 2, 1, { projectedStartDate: '2030-01-14', projectedEndDate: '2030-01-16' }),
+  features: [{ id: 'goal', name: 'A goal', type: 'Certification' }],
+  stories: [
+    story('phase-1', 1, { type: 'Course', featureId: 'goal' }),
+    story('phase-2', 2),
+  ],
+  tasks: [
+    task('b', 1, 2, { baselineStartDate: '2030-01-10', baselineEndDate: '2030-01-12' }),
+    task('a', 1, 1, { state: 'done' }),
+    task('c', 2, 1, { projectedStartDate: '2030-01-14', projectedEndDate: '2030-01-16' }),
   ],
 }
 
 const PREVIEW = {
   revision: 7,
   changes: {
-    items: { added: [], removed: [], changed: [{ id: 'a', fields: ['name'] }] },
-    workItems: { added: [], removed: [], changed: [] },
+    tasks: { added: [], removed: [], changed: [{ id: 'a', fields: ['name'] }] },
+    stories: { added: [], removed: [], changed: [] },
+    features: { added: [], removed: [], changed: [] },
     settings: [],
   },
   introduced: [],
-  issues: [{ severity: 'warning', rule: 'too-long', message: 'a is long', itemId: 'a' }],
+  issues: [
+    { severity: 'warning', rule: 'too-long', message: 'a is long', taskId: 'a' },
+    { severity: 'info', rule: 'single-task', message: 'phase-2 has 1 task', taskId: null },
+  ],
 }
 
 type Call = { method: string; path: string; body?: unknown }
@@ -133,11 +143,11 @@ describe('the protocol', () => {
     const tools = (await rpc('tools/list')).result!.tools as Array<Record<string, unknown>>
     expect(tools.map((tool) => tool.name)).toEqual([
       'get_roadmap',
-      'list_items',
+      'list_tasks',
       'export_roadmap',
       'validate',
       'apply_edits',
-      'move_item',
+      'move_task',
       'generate',
       'import_roadmap',
       'start_draft',
@@ -184,28 +194,39 @@ describe('the protocol', () => {
 })
 
 describe('the tools', () => {
-  it('reads the roadmap small: an overview, then the items asked for, in plan order', async () => {
+  it('reads the roadmap small: an overview, then the tasks asked for, in plan order', async () => {
     const { planify, calls } = fakePlanify()
     const { call } = server(planify)
 
     const overview = await call('get_roadmap')
     expect(overview).toMatchObject({ target: 'live', revision: 7, weeklyHours: 15 })
     expect(overview.phases).toEqual([
-      expect.objectContaining({ number: 1, items: 2, done: 1, plannedEnd: '2030-01-12' }),
-      expect.objectContaining({ number: 2, items: 1, done: 0 }),
+      expect.objectContaining({ number: 1, tasks: 2, done: 1, plannedEnd: '2030-01-12' }),
+      expect.objectContaining({ number: 2, tasks: 1, done: 0 }),
+    ])
+    expect(overview.features).toEqual([{ id: 'goal', name: 'A goal', type: 'Certification', stories: 1 }])
+    expect(overview.stories).toEqual([
+      { id: 'phase-1', name: 'phase-1', type: 'Course', phase: 1, featureId: 'goal', tasks: 2, done: 1 },
+      { id: 'phase-2', name: 'phase-2', type: null, phase: 2, featureId: null, tasks: 1, done: 0 },
     ])
 
-    const phase1 = (await call('list_items', { phase: 1 })).items as Array<Record<string, unknown>>
+    const phase1 = (await call('list_tasks', { phase: 1 })).tasks as Array<Record<string, unknown>>
     expect(phase1.map((each) => each.id)).toEqual(['a', 'b'])
+    expect(phase1[0]).toMatchObject({ storyId: 'phase-1' })
     expect(phase1[0]).not.toHaveProperty('notes')
     expect(phase1[0]).not.toHaveProperty('projectedStart')
-    const moved = (await call('list_items', { phase: 2, full: true })).items as Array<
+    const moved = (await call('list_tasks', { phase: 2, full: true })).tasks as Array<
       Record<string, unknown>
     >
     expect(moved[0]).toMatchObject({ notes: 'What it is', projectedStart: '2030-01-14' })
+    const ofStory = (await call('list_tasks', { story: 'phase-2' })).tasks as Array<
+      Record<string, unknown>
+    >
+    expect(ofStory.map((each) => each.id)).toEqual(['c'])
 
     await call('get_roadmap', { draft: true })
     expect(calls.map((each) => each.path)).toEqual([
+      '/api/state',
       '/api/state',
       '/api/state',
       '/api/state',
@@ -218,7 +239,7 @@ describe('the tools', () => {
       (body as { dryRun: boolean }).dryRun ? PREVIEW : { ...WORLD, revision: 8 },
     )
     const { call } = server(planify)
-    const edits = [{ op: 'updateItem', id: 'a', fields: { name: 'A' } }]
+    const edits = [{ op: 'updateTask', id: 'a', fields: { name: 'A' } }]
 
     const dry = await call('apply_edits', { revision: 7, edits, dryRun: true, draft: true })
     expect(dry).toEqual({
@@ -228,6 +249,7 @@ describe('the tools', () => {
       introducedErrors: [],
       errors: 0,
       warnings: 1,
+      notes: 1,
     })
     expect(calls[0]).toEqual({
       method: 'POST',
@@ -242,9 +264,9 @@ describe('the tools', () => {
     })
   })
 
-  it('moves an item’s dates through the item’s own route', async () => {
+  it('moves a task’s dates through the task’s own route', async () => {
     const { planify, calls } = fakePlanify(() => ({ ...WORLD, revision: 8 }))
-    await server(planify).call('move_item', {
+    await server(planify).call('move_task', {
       revision: 7,
       id: 'a b',
       start: '2030-02-01',
@@ -252,7 +274,7 @@ describe('the tools', () => {
     })
     expect(calls[0]).toEqual({
       method: 'PATCH',
-      path: '/api/items/a%20b/dates',
+      path: '/api/tasks/a%20b/dates',
       body: {
         baselineStartDate: '2030-02-01',
         baselineEndDate: '2030-02-03',
@@ -263,7 +285,7 @@ describe('the tools', () => {
     })
   })
 
-  it('passes on where a generator would place each item', async () => {
+  it('passes on where a generator would place each task', async () => {
     const placed = [{ id: 'x', name: 'X', start: '2030-02-01', end: '2030-02-01', hours: 2 }]
     const { planify } = fakePlanify(() => ({ ...PREVIEW, placed }))
     const dry = await server(planify).call('generate', { revision: 7, generator: {}, dryRun: true })
@@ -314,7 +336,7 @@ describe('the tools', () => {
   it('lists what the plan breaks, counted', async () => {
     const { planify, calls } = fakePlanify(() => ({ revision: 3, issues: PREVIEW.issues }))
     const checked = await server(planify).call('validate', { draft: true })
-    expect(checked).toMatchObject({ revision: 3, errors: 0, warnings: 1 })
+    expect(checked).toMatchObject({ revision: 3, errors: 0, warnings: 1, notes: 1 })
     expect(calls[0]!.path).toBe('/api/issues?draft=1')
   })
 })
@@ -338,7 +360,7 @@ describe('refusals', () => {
 
   it('names the errors a write would bring in', async () => {
     const broken = new PlanifyError('It would break the roadmap', 422, {
-      issues: [{ severity: 'error', rule: 'cycle', message: 'a → b → a', itemId: 'a' }],
+      issues: [{ severity: 'error', rule: 'cycle', message: 'a → b → a', taskId: 'a' }],
     })
     expect(JSON.parse((await refusedWith(broken)) as string)).toEqual({
       refused: 'It would bring in errors the roadmap does not have',
@@ -347,7 +369,7 @@ describe('refusals', () => {
   })
 
   it('passes on what planify said about an edit it cannot apply', async () => {
-    expect(await refusedWith(new PlanifyError('No item with id z', 400))).toBe('No item with id z')
+    expect(await refusedWith(new PlanifyError('No task with id z', 400))).toBe('No task with id z')
   })
 
   it('refuses bad arguments before calling planify', async () => {

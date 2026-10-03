@@ -26,11 +26,11 @@ export const MCP_DAILY_CALLS = 2000
  */
 export const MCP_DAILY_CALLS_EACH = 1000
 
-const INSTRUCTIONS = `Planify is a study roadmap: items with planned dates in phases, dependencies, pauses and a weekly hours capacity. Dates are recomputed from the plan and from progress.
-Read with get_roadmap first, then list_items. Every write takes the revision the last read answered and is refused if the roadmap changed since: read again and retry.
+const INSTRUCTIONS = `Planify is a study roadmap: tasks with planned dates, each a step of a story inside one phase, stories optionally serving a feature wider than a phase, with dependencies, pauses and a weekly hours capacity. Dates are recomputed from the plan and from progress.
+Read with get_roadmap first, then list_tasks. Every write takes the revision the last read answered and is refused if the roadmap changed since: read again and retry.
 Dry-run every write first (dryRun: true) and check introducedErrors: a write that brings in an error is refused. Warnings never block.
 For a change of several steps, start_draft, make them with draft: true, then publish_draft — dry run first, then with the live revision it answers.
-Progress (ticking items off, hours) is the person's, and is not changed here.
+Progress (ticking tasks off, hours) is the person's, and is not changed here.
 Each person reaches their own roadmap only. For a new or empty roadmap, the plan_from_spec prompt walks through turning a goal into a plan.`
 
 type Message = { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown }
