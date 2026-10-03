@@ -1,5 +1,5 @@
 import type { Planify } from './planify'
-import type { AppState, Issue, Item, Preview } from './types'
+import type { AppState, Issue, Preview, Task } from './types'
 
 // What an agent can do to the roadmap, as MCP tools. Each one is a call to
 // planify's own API, so an agent's change is checked, guarded by revision and
@@ -47,48 +47,50 @@ const revisionArg = {
     'The revision this change was made from, as the last read answered — the draft’s when draft is true. A stale one is refused.',
 }
 
-const ITEM_TYPES =
+const WORK_TYPES =
   'Certification, Course, Book, Documentation, Paper, Case study, Project, Practice, Exam prep'
 
-const EDITS_HELP = `Each edit is an object with an "op":
-- updateItem {id, fields} — fields: name, type, workItemId, skills, price, link, resources [{label,url}], duration ("~6h, 3 chapters"), notes, doneWhen
+const EDITS_HELP = `A task is one step that fits in a week. Every task is a step of a story — a deliverable inside one phase — and takes its story's phase; a story may serve a feature, a goal wider than a phase. Each edit is an object with an "op":
+- updateTask {id, fields} — fields: name, storyId (moving it to that story's phase, last), skills, link, resources [{label,url}], duration ("~6h, 3 chapters"), notes, doneWhen
 - setDependencies {id, dependsOn: [ids]}
-- createItem {item: {name, type, phase, baselineStartDate, baselineEndDate, skills, id?, dependsOn?, duration, notes, doneWhen, link, price, resources, workItemId}}
-- moveItem {id, phase, before?: item id} — phase and order in the backlog
-- deleteItem {id, rewire?: connect its dependents to its dependencies, discardProgress?}
-- createWorkItem {workItem: {name, type, id?, link, notes, resources}}, updateWorkItem {id, fields}, deleteWorkItem {id}
-- addPhase {name}, updatePhase {number, fields: {name?, closingMilestoneId?}}, removePhase {number} (the last, once empty)
-- setBlackouts {blackouts: [{from, to, reason}], keepStudyDays?: shift unfinished items with the pauses}
+- createTask {task: {name, storyId, baselineStartDate, baselineEndDate, skills, id?, dependsOn?, duration, notes, doneWhen, link, resources}}
+- moveTask {id, before?: task id} — order within its phase; a task changes phase by changing story
+- deleteTask {id, rewire?: connect its dependents to its dependencies, discardProgress?}
+- createStory {story: {name, phase, id?, type?, featureId?, link, resources, price, notes, doneWhen}}, updateStory {id, fields} (a new phase moves its tasks with it), deleteStory {id} (only once it has no tasks)
+- createFeature {feature: {name, id?, type?, link, notes}}, updateFeature {id, fields}, deleteFeature {id} (its stories stay, serving none)
+- addPhase {name}, updatePhase {number, fields: {name?, closingMilestoneId?}}, removePhase {number} (the last, once it has no stories)
+- setBlackouts {blackouts: [{from, to, reason}], keepStudyDays?: shift unfinished tasks with the pauses}
 - updateSettings {fields: {timeZone?, startDate?, weeklyHours?}}
 - setSkillMap {dimensions, skills: {skill: dimension}, renamed?: {old: new}}
-Types: ${ITEM_TYPES}. Dates are YYYY-MM-DD. Dates of an existing item move with move_item, not here.`
+A type is an optional label on stories and features, one of: ${WORK_TYPES}. Tasks have none. Dates are YYYY-MM-DD. Dates of an existing task move with move_task, not here.`
 
-const GENERATOR_HELP = `An object with "kind" and, for every kind: name, phase, skills (at least one), after (an item id the first new item waits on, or null for the previous phase's closing milestone), from ("" or the earliest YYYY-MM-DD). Then:
-- course: type (Course | Book | Documentation), link, hours (in all), weeklyHours (the most a week) — a part a week, each holding what the week has free
+const GENERATOR_HELP = `An object with "kind" and, for every kind: name, phase, skills (at least one), after (a task id the first new task waits on, or null for the previous phase's closing milestone), from ("" or the earliest YYYY-MM-DD). Then:
+- course: type (Course | Book | Documentation), link, hours (in all), weeklyHours (the most a week) — a task a week, each holding what the week has free
 - certification: link, price, prepHours (0 for none), weeklyHours, prepDoneWhen, examHours, examDate ("" for the first day with room)
 - project: link, doneWhen (for the whole project), tasks [{name, hours}] — chained, each where its hours fit
 - practice: hours (a block), weeks, doneWhen — one block a week, at the end of the week
-Items are placed in the hours the weekly capacity leaves free, inside one week each, skipping pauses.`
+Each makes one new story, its tasks placed in the hours the weekly capacity leaves free, inside one week each, skipping pauses.`
 
 export const TOOLS: Tool[] = [
   {
     name: 'get_roadmap',
     title: 'Roadmap overview',
     description:
-      'Start here. Today, the revision to write from, capacity, phases with their dates and item counts, pauses, work items, the skill map, and whether a draft is in progress. Items come from list_items; what the plan breaks, from validate.',
+      'Start here. Today, the revision to write from, capacity, phases with their dates and task counts, pauses, features, stories with their phase and task counts, the skill map, and whether a draft is in progress. Tasks come from list_tasks; what the plan breaks, from validate.',
     inputSchema: { type: 'object', properties: { draft: draftFlag }, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async (args, planify) => overview(await world(planify, target(args)), target(args)),
   },
   {
-    name: 'list_items',
-    title: 'List items',
+    name: 'list_tasks',
+    title: 'List tasks',
     description:
-      'Items in plan order, with planned and projected dates, duration, state, hours done, dependencies and work item. Filter by phase and state to keep the answer small; full adds notes, done-when, links and price.',
+      'Tasks in plan order, with planned and projected dates, duration, state, hours done, dependencies and story. Filter by phase, story and state to keep the answer small; full adds notes, done-when and links.',
     inputSchema: {
       type: 'object',
       properties: {
         phase: { type: 'integer', description: 'Only this phase.' },
+        story: { type: 'string', description: 'Only the tasks of this story id.' },
         state: { type: 'string', enum: ['pending', 'in_progress', 'done'] },
         full: { type: 'boolean', description: 'Every field, not only the planning ones.' },
         draft: draftFlag,
@@ -99,14 +101,16 @@ export const TOOLS: Tool[] = [
     run: async (args, planify) => {
       const state = await world(planify, target(args))
       const phase = optionalInteger(args.phase, 'phase')
+      const story = optionalString(args.story, 'story')
       const wanted = optionalString(args.state, 'state')
       return {
         revision: state.revision,
-        items: state.items
-          .filter((item) => phase === null || item.phase === phase)
-          .filter((item) => wanted === null || item.state === wanted)
+        tasks: state.tasks
+          .filter((task) => phase === null || task.phase === phase)
+          .filter((task) => story === null || task.storyId === story)
+          .filter((task) => wanted === null || task.state === wanted)
           .sort((a, b) => a.phase - b.phase || a.sortOrder - b.sortOrder)
-          .map((item) => (args.full === true ? fullItem(item) : planningItem(item))),
+          .map((task) => (args.full === true ? fullTask(task) : planningTask(task))),
       }
     },
   },
@@ -114,7 +118,7 @@ export const TOOLS: Tool[] = [
     name: 'export_roadmap',
     title: 'Export the roadmap file',
     description:
-      'The whole live roadmap as the file the app exports and imports: settings, phases, pauses, skills, work items and every item, without progress. Large; prefer get_roadmap and list_items for reading. Edit it and pass it to import_roadmap to change many things at once.',
+      'The whole live roadmap as the file the app exports and imports: settings, phases, pauses, skills, features, stories and every task, without progress. Large; prefer get_roadmap and list_tasks for reading. Edit it and pass it to import_roadmap to change many things at once.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: (_args, planify) => planify('GET', '/api/export'),
@@ -123,7 +127,7 @@ export const TOOLS: Tool[] = [
     name: 'validate',
     title: 'Check the plan',
     description:
-      'Every rule the plan breaks. Errors refuse a write to the live roadmap; warnings are the plan’s conventions (a week over capacity, an item over a week long) and never block.',
+      'Every rule the plan breaks. Errors refuse a write to the live roadmap; warnings are the plan’s conventions (a week over capacity, a task over a week long) and never block; notes are conventions a sound plan may skip (a story of one task) and are not problems.',
     inputSchema: { type: 'object', properties: { draft: draftFlag }, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async (args, planify) => {
@@ -159,10 +163,10 @@ export const TOOLS: Tool[] = [
     },
   },
   {
-    name: 'move_item',
-    title: 'Move an item’s dates',
+    name: 'move_task',
+    title: 'Move a task’s dates',
     description:
-      'Sets an item’s planned start and end. When it now ends later, everything that depends on it moves forward by the same study days. Nothing is pulled back.',
+      'Sets a task’s planned start and end. When it now ends later, everything that depends on it moves forward by the same study days. Nothing is pulled back.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -182,7 +186,7 @@ export const TOOLS: Tool[] = [
         planify,
         args,
         'PATCH',
-        `/api/items/${encodeURIComponent(requiredString(args.id, 'id'))}/dates`,
+        `/api/tasks/${encodeURIComponent(requiredString(args.id, 'id'))}/dates`,
         {
           baselineStartDate: requiredString(args.start, 'start'),
           baselineEndDate: requiredString(args.end, 'end'),
@@ -191,8 +195,8 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'generate',
-    title: 'Generate and place items',
-    description: `Adds a course, certification, project or practice blocks, placed in the plan. Dry-run first: the answer lists each new item with its dates. ${GENERATOR_HELP}`,
+    title: 'Generate and place a story',
+    description: `Adds a course, certification, project or practice blocks as a story with its tasks, placed in the plan. Dry-run first: the answer lists each new task with its dates. ${GENERATOR_HELP}`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -212,7 +216,7 @@ export const TOOLS: Tool[] = [
     name: 'import_roadmap',
     title: 'Import a roadmap file',
     description:
-      'Replaces the live roadmap’s content with a file shaped like export_roadmap’s. Progress on the items it keeps stays; items it drops go with their progress. Dry-run first and read what it removes.',
+      'Replaces the live roadmap’s content with a file shaped like export_roadmap’s. Progress on the tasks it keeps stays; tasks it drops go with their progress. Dry-run first and read what it removes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -333,6 +337,7 @@ function countOf(issues: readonly Issue[]) {
   return {
     errors: issues.filter((issue) => issue.severity === 'error').length,
     warnings: issues.filter((issue) => issue.severity === 'warning').length,
+    notes: issues.filter((issue) => issue.severity === 'info').length,
   }
 }
 
@@ -341,12 +346,12 @@ function issueOf(issue: Issue) {
     severity: issue.severity,
     rule: issue.rule,
     message: issue.message,
-    itemId: issue.itemId,
+    taskId: issue.taskId,
   }
 }
 
 function overview(state: AppState, where: Target) {
-  const { roadmap, items, workItems } = state
+  const { roadmap, tasks, stories, features } = state
   return {
     target: where,
     today: state.today,
@@ -356,60 +361,70 @@ function overview(state: AppState, where: Target) {
     startDate: roadmap.startDate,
     weeklyHours: roadmap.weeklyHours.normal,
     phases: roadmap.phases.map((phase) => {
-      const inPhase = items.filter((item) => item.phase === phase.number)
+      const inPhase = tasks.filter((task) => task.phase === phase.number)
       return {
         number: phase.number,
         name: phase.name,
         closingMilestoneId: phase.closingMilestoneId,
-        items: inPhase.length,
-        done: inPhase.filter((item) => item.state === 'done').length,
-        plannedStart: earliest(inPhase.map((item) => item.baselineStartDate)),
-        plannedEnd: latest(inPhase.map((item) => item.baselineEndDate)),
+        tasks: inPhase.length,
+        done: inPhase.filter((task) => task.state === 'done').length,
+        plannedStart: earliest(inPhase.map((task) => task.baselineStartDate)),
+        plannedEnd: latest(inPhase.map((task) => task.baselineEndDate)),
       }
     }),
     pauses: roadmap.blackouts,
-    workItems: workItems.map((workItem) => ({
-      id: workItem.id,
-      name: workItem.name,
-      type: workItem.type,
-      parts: items.filter((item) => item.workItemId === workItem.id).length,
+    features: features.map((feature) => ({
+      id: feature.id,
+      name: feature.name,
+      type: feature.type,
+      stories: stories.filter((story) => story.featureId === feature.id).length,
     })),
+    stories: stories.map((story) => {
+      const steps = tasks.filter((task) => task.storyId === story.id)
+      return {
+        id: story.id,
+        name: story.name,
+        type: story.type,
+        phase: story.phase,
+        featureId: story.featureId,
+        tasks: steps.length,
+        done: steps.filter((task) => task.state === 'done').length,
+      }
+    }),
     dimensions: roadmap.dimensions,
     skills: roadmap.skillDimension,
   }
 }
 
-function planningItem(item: Item) {
+function planningTask(task: Task) {
   return {
-    id: item.id,
-    name: item.name,
-    type: item.type,
-    phase: item.phase,
-    workItemId: item.workItemId,
-    start: item.baselineStartDate,
-    end: item.baselineEndDate,
+    id: task.id,
+    name: task.name,
+    phase: task.phase,
+    storyId: task.storyId,
+    start: task.baselineStartDate,
+    end: task.baselineEndDate,
     // Only where the projection has moved off the plan.
-    ...(item.projectedStartDate !== item.baselineStartDate ||
-    item.projectedEndDate !== item.baselineEndDate
-      ? { projectedStart: item.projectedStartDate, projectedEnd: item.projectedEndDate }
+    ...(task.projectedStartDate !== task.baselineStartDate ||
+    task.projectedEndDate !== task.baselineEndDate
+      ? { projectedStart: task.projectedStartDate, projectedEnd: task.projectedEndDate }
       : {}),
-    duration: item.duration,
-    state: item.state,
-    hoursDone: item.hoursDone,
-    dependsOn: item.dependsOn,
-    skills: item.skills,
+    duration: task.duration,
+    state: task.state,
+    hoursDone: task.hoursDone,
+    dependsOn: task.dependsOn,
+    skills: task.skills,
   }
 }
 
-function fullItem(item: Item) {
+function fullTask(task: Task) {
   return {
-    ...planningItem(item),
-    notes: item.notes,
-    doneWhen: item.doneWhen,
-    link: item.link,
-    resources: item.resources,
-    price: item.price,
-    completedAt: item.completedAt,
+    ...planningTask(task),
+    notes: task.notes,
+    doneWhen: task.doneWhen,
+    link: task.link,
+    resources: task.resources,
+    completedAt: task.completedAt,
   }
 }
 

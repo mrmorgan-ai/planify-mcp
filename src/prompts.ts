@@ -22,7 +22,7 @@ const PLAN_FROM_SPEC: Prompt = {
   name: 'plan_from_spec',
   title: 'Turn a goal into a plan',
   description:
-    'Walks through turning what a person wants to achieve into a Planify roadmap they can follow: outcome and proof, hours, a skill map, phases that each end in something built, units sized in weeks, then placed in a draft and reviewed before it is published. For a new or empty roadmap, or a new phase.',
+    'Walks through turning what a person wants to achieve into a Planify roadmap they can follow: outcome and proof, hours, a skill map, phases that each end in something built, stories sized in weeks, then placed in a draft and reviewed before it is published. For a new or empty roadmap, or a new phase.',
   arguments: [
     {
       name: 'goal',
@@ -59,19 +59,19 @@ Work in six steps. Finish each before the next, and show the person what it prod
 
 2. Budget. Ask for what is missing of: hours they can study each week, the date they start, weeks they cannot study (holidays, travel, a birth), and the date they want to be done by. Hours a week times weeks is the budget. When the goal does not fit it, say so, and cut scope or move the date together. Never plan more hours a week than they gave.
 
-3. Skill map. Read get_roadmap first. Propose four to six axes for this goal and two to five concrete skills under each; they replace whatever the roadmap starts with. Every item names the skills it trains, so choose skills you could point at in their work, not topics.
+3. Skill map. Read get_roadmap first. Propose four to six axes for this goal and two to five concrete skills under each; they replace whatever the roadmap starts with. Every task names the skills it trains, so choose skills you could point at in their work, not topics.
 
 4. Phases. At most six. Each ends in something built or measured, and that is its closing milestone: an exam, or the last task of the phase's project, usually a write-up that argues its decisions with numbers from the earlier tasks. A phase with nothing to show is folded into another.
 
-5. Units. For each phase, choose the courses, books, documentation, projects, exams and practice that get there, naming exact chapters, modules or tasks, never "read the docs of X". Estimate each in hours. A project that runs through the phase and applies what is studied as it goes beats reading alone. Each week gets one practice block that applies that week's material hands-on, and its done-when is something checkable ("the benchmark table is written and explained"), never an activity ("practice X").
+5. Stories. For each phase, choose the courses, books, documentation, projects, exams and practice that get there — each one a story, its weeks or steps its tasks — naming exact chapters, modules or tasks, never "read the docs of X". Estimate each in hours. A project that runs through the phase and applies what is studied as it goes beats reading alone. Each week gets one practice block that applies that week's material hands-on, and its done-when is something checkable ("the benchmark table is written and explained"), never an activity ("practice X"). A goal that spans several phases — a certification, a large project — is a feature, and each phase's part of it a story serving that feature.
 
 6. Place, review, publish. start_draft, then every write with draft: true and a dry run first:
    - apply_edits: setSkillMap; updateSettings with timeZone, startDate and weeklyHours; setBlackouts; updatePhase and addPhase for the phases' names.
-   - generate, once per unit: course (hours in all, weeklyHours as the pace), certification (prepHours, examHours, examDate), project (tasks with their hours), practice (hours a block, weeks). Generators place work in the hours each week has free, one week at most per item, chained.
-   - apply_edits for what the generators do not make, and updatePhase to set each phase's closingMilestoneId.
-   Then validate with draft: true. Fix every error, and fix or explain every warning. Show the person the plan phase by phase (list_items with draft: true), with total hours against the budget. Publish only when they agree: publish_draft as a dry run, then for real.
+   - generate, once per story: course (hours in all, weeklyHours as the pace), certification (prepHours, examHours, examDate), project (tasks with their hours), practice (hours a block, weeks). Each makes one story and places its tasks in the hours each week has free, one week at most per task, chained.
+   - apply_edits for what the generators do not make: createFeature for goals wider than a phase, then updateStory with its featureId on each story that serves one; updatePhase to set each phase's closingMilestoneId.
+   Then validate with draft: true. Fix every error, and fix or explain every warning; notes need no fixing. Show the person the plan phase by phase (list_tasks with draft: true), with total hours against the budget. Publish only when they agree: publish_draft as a dry run, then for real.
 
-What Planify holds a plan to: an item lasts at most seven study days, inside one week; nothing starts or ends in a pause; no week is planned above its capacity; dependencies are real relationships (the next part of a course waits on the previous part, a project task on the one before, a phase on the previous phase's closing milestone), never "everything in order"; and a dependency ends before the item that waits on it starts. Progress is the person's: never mark anything done or log hours.`,
+What Planify holds a plan to: every task is a step of a story and lasts at most seven study days, inside one week; nothing starts or ends in a pause; no week is planned above its capacity; dependencies are real relationships (the next week of a course waits on the previous one, a project task on the one before, a phase on the previous phase's closing milestone), never "everything in order"; and a dependency ends before the task that waits on it starts. Progress is the person's: never mark anything done or log hours.`,
 }
 
 export const PROMPTS: Prompt[] = [PLAN_FROM_SPEC]

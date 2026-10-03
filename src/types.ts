@@ -4,19 +4,18 @@
 
 export type State = 'pending' | 'in_progress' | 'done'
 
-export type Item = {
+/** One scheduled step, inside a week. Its phase is its story's. */
+export type Task = {
   id: string
   name: string
-  type: string
   phase: number
   skills: string[]
-  workItemId: string | null
+  storyId: string
   baselineStartDate: string
   baselineEndDate: string
   projectedStartDate: string
   projectedEndDate: string
   dependsOn: string[]
-  price: string
   link: string | null
   resources: Array<{ label: string; url: string }>
   duration: string
@@ -28,7 +27,20 @@ export type Item = {
   sortOrder: number
 }
 
-export type WorkItem = { id: string; name: string; type: string }
+/** A deliverable inside one phase, made of tasks. */
+export type Story = {
+  id: string
+  name: string
+  /** An optional label: Course, Certification, Project… */
+  type: string | null
+  phase: number
+  featureId: string | null
+  price: string
+  doneWhen: string
+}
+
+/** A goal wider than a phase, served by stories. */
+export type Feature = { id: string; name: string; type: string | null }
 
 export type Phase = { number: number; name: string; closingMilestoneId: string | null }
 
@@ -48,27 +60,32 @@ export type AppState = {
   revision: number
   draft: { startedAt: string; updatedAt: string } | null
   roadmap: Roadmap
-  workItems: WorkItem[]
-  items: Item[]
+  features: Feature[]
+  stories: Story[]
+  tasks: Task[]
 }
 
 export type Issue = {
-  severity: 'error' | 'warning'
+  /** A note is a convention a sound plan may not follow: told, never a problem. */
+  severity: 'error' | 'warning' | 'info'
   rule: string
   message: string
-  itemId: string | null
+  taskId: string | null
 }
+
+type Changed = { added: string[]; removed: string[]; changed: string[] }
 
 /** What every `dryRun` answers. */
 export type Preview = {
   revision: number
   changes: {
-    items: {
+    tasks: {
       added: string[]
       removed: Array<{ id: string; name: string; state: State; hoursDone: number }>
       changed: Array<{ id: string; fields: string[] }>
     }
-    workItems: { added: string[]; removed: string[]; changed: string[] }
+    stories: Changed
+    features: Changed
     settings: string[]
   }
   introduced: Issue[]
