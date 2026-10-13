@@ -50,6 +50,8 @@ const revisionArg = {
 const WORK_TYPES =
   'Certification, Course, Book, Documentation, Paper, Case study, Project, Practice, Exam prep'
 
+const SKILLS_HELP = `Skills are names from the skill map get_roadmap answers, spelt as they are there: a task naming any other is refused on the live roadmap, with the mapped skills it most likely meant. suggest_skills answers which ones a task probably feeds. For a skill the map lacks, add it with setSkillMap first, in the same apply_edits: setSkillMap replaces the whole map, so send every axis and skill it should end with.`
+
 const EDITS_HELP = `A task is one step that fits in a week. Every task is a step of a story — a deliverable inside one phase — and takes its story's phase; a story may serve a feature, a goal wider than a phase. Each edit is an object with an "op":
 - updateTask {id, fields} — fields: name, storyId (moving it to that story's phase, last), skills, link, resources [{label,url}], duration ("~6h, 3 chapters"), notes, doneWhen
 - setDependencies {id, dependsOn: [ids]}
@@ -62,14 +64,16 @@ const EDITS_HELP = `A task is one step that fits in a week. Every task is a step
 - setBlackouts {blackouts: [{from, to, reason}], keepStudyDays?: shift unfinished tasks with the pauses}
 - updateSettings {fields: {timeZone?, startDate?, weeklyHours?}}
 - setSkillMap {dimensions, skills: {skill: dimension}, renamed?: {old: new}}
-A type is an optional label on stories and features, one of: ${WORK_TYPES}. Tasks have none. Dates are YYYY-MM-DD. Dates of an existing task move with move_task, not here.`
+A type is an optional label on stories and features, one of: ${WORK_TYPES}. Tasks have none. Dates are YYYY-MM-DD. Dates of an existing task move with move_task, not here.
+${SKILLS_HELP}`
 
 const GENERATOR_HELP = `An object with "kind" and, for every kind: name, phase, skills (at least one), after (a task id the first new task waits on, or null for the previous phase's closing milestone), from ("" or the earliest YYYY-MM-DD). Then:
 - course: type (Course | Book | Documentation), link, hours (in all), weeklyHours (the most a week) — a task a week, each holding what the week has free
 - certification: link, price, prepHours (0 for none), weeklyHours, prepDoneWhen, examHours, examDate ("" for the first day with room)
 - project: link, doneWhen (for the whole project), tasks [{name, hours}] — chained, each where its hours fit
 - practice: hours (a block), weeks, doneWhen — one block a week, at the end of the week
-Each makes one new story, its tasks placed in the hours the weekly capacity leaves free, inside one week each, skipping pauses.`
+Each makes one new story, its tasks placed in the hours the weekly capacity leaves free, inside one week each, skipping pauses. Every task feeds the skills given; a project's task also feeds the mapped skills its own name mentions, and the dry run lists each task's.
+${SKILLS_HELP}`
 
 export const TOOLS: Tool[] = [
   {
@@ -112,6 +116,47 @@ export const TOOLS: Tool[] = [
           .sort((a, b) => a.phase - b.phase || a.sortOrder - b.sortOrder)
           .map((task) => (args.full === true ? fullTask(task) : planningTask(task))),
       }
+    },
+  },
+  {
+    name: 'suggest_skills',
+    title: 'Suggest a task’s skills',
+    description:
+      'The mapped skills a task probably feeds, surest first, each with its axis and why: named in the task, its notes, its link or its story — by the skill’s own name or another it goes by — or carried by at least half of the story’s other tasks. Ask before createTask or updateTask and choose from the answer; nothing is written. inherited is what nearly all of the story’s tasks carry. An empty answer means nothing mapped matches, not that the task feeds nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The task’s name, as it is or will be.' },
+        storyId: { type: 'string', description: 'The story it is, or will be, a step of.' },
+        id: {
+          type: 'string',
+          description: 'The task itself, when it exists, so it is not counted among its story’s tasks.',
+        },
+        link: { type: 'string' },
+        notes: { type: 'string' },
+        limit: { type: 'integer', description: 'The most to answer. Default 5.' },
+        draft: draftFlag,
+      },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    run: (args, planify) => {
+      const asked = {
+        name: optionalString(args.name, 'name'),
+        storyId: optionalString(args.storyId, 'storyId'),
+        id: optionalString(args.id, 'id'),
+        link: optionalString(args.link, 'link'),
+        notes: optionalString(args.notes, 'notes'),
+      }
+      if (asked.name === null && asked.storyId === null) {
+        throw new ToolError('name or storyId is needed to suggest from')
+      }
+      const limit = optionalInteger(args.limit, 'limit')
+      const query = new URLSearchParams()
+      for (const [key, value] of Object.entries(asked)) if (value !== null) query.set(key, value)
+      if (limit !== null) query.set('limit', String(limit))
+      if (target(args) === 'draft') query.set('draft', '1')
+      return planify('GET', `/api/skills/suggest?${query}`)
     },
   },
   {
