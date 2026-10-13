@@ -48,6 +48,7 @@ Course, Certification, Project… — as an optional label.
 | `get_roadmap` | Start here: today, the revision to write from, capacity, phases with their dates, pauses, features, stories with their task counts, the skill map, and whether a draft is in progress |
 | `list_tasks` | Tasks in plan order with their dates, duration, state, hours, dependencies and story, filtered by phase, story and state; `full` adds notes and links |
 | `validate` | Every rule the plan breaks: errors, warnings, and notes that are not problems |
+| `suggest_skills` | The mapped skills a task probably feeds, from its name, notes, link and story, each with its axis and why |
 | `export_roadmap` | The whole roadmap file, as the app exports it |
 | `apply_edits` | Edit tasks, stories, features, phases, pauses, settings or skills as one change |
 | `move_task` | Move a task's planned dates; what depends on it moves forward with it |

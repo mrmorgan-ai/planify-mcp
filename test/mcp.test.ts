@@ -144,6 +144,7 @@ describe('the protocol', () => {
     expect(tools.map((tool) => tool.name)).toEqual([
       'get_roadmap',
       'list_tasks',
+      'suggest_skills',
       'export_roadmap',
       'validate',
       'apply_edits',
@@ -286,10 +287,33 @@ describe('the tools', () => {
   })
 
   it('passes on where a generator would place each task', async () => {
-    const placed = [{ id: 'x', name: 'X', start: '2030-02-01', end: '2030-02-01', hours: 2 }]
+    const placed = [
+      { id: 'x', name: 'X', start: '2030-02-01', end: '2030-02-01', hours: 2, skills: ['A skill'] },
+    ]
     const { planify } = fakePlanify(() => ({ ...PREVIEW, placed }))
     const dry = await server(planify).call('generate', { revision: 7, generator: {}, dryRun: true })
     expect(dry.placed).toEqual(placed)
+  })
+
+  it('asks planify which skills a task probably feeds, and passes the answer on', async () => {
+    const answer = {
+      revision: 7,
+      suggestions: [{ skill: 'A skill', score: 1, reason: 'named in the task', axis: 'An axis' }],
+      inherited: [],
+    }
+    const { planify, calls } = fakePlanify(() => answer)
+    const { call } = server(planify)
+
+    expect(await call('suggest_skills', { name: 'Use a skill & more', storyId: 'phase-1' })).toEqual(
+      answer,
+    )
+    expect(calls[0]).toMatchObject({
+      method: 'GET',
+      path: '/api/skills/suggest?name=Use+a+skill+%26+more&storyId=phase-1',
+    })
+
+    await call('suggest_skills', { storyId: 'phase-1', id: 'a', limit: 3, draft: true })
+    expect(calls[1]!.path).toBe('/api/skills/suggest?storyId=phase-1&id=a&limit=3&draft=1')
   })
 
   it('imports the file as exported, without the revision it names', async () => {
@@ -368,6 +392,25 @@ describe('refusals', () => {
     })
   })
 
+  it('passes on the mapped skills a refused one most likely meant', async () => {
+    const unmapped = new PlanifyError('It would break the roadmap', 422, {
+      issues: [
+        {
+          severity: 'error',
+          rule: 'unmapped-skill',
+          message: 'a uses "k8s", which is on no radar axis; closest: Kubernetes',
+          taskId: 'a',
+        },
+      ],
+    })
+    expect(JSON.parse((await refusedWith(unmapped)) as string).errors).toEqual([
+      {
+        rule: 'unmapped-skill',
+        message: 'a uses "k8s", which is on no radar axis; closest: Kubernetes',
+      },
+    ])
+  })
+
   it('passes on what planify said about an edit it cannot apply', async () => {
     expect(await refusedWith(new PlanifyError('No task with id z', 400))).toBe('No task with id z')
   })
@@ -380,6 +423,9 @@ describe('refusals', () => {
     )
     expect((await call('apply_edits', { revision: 7, edits: [] })).refused).toBe(
       'edits must be a non-empty array',
+    )
+    expect((await call('suggest_skills', { link: 'https://example.com' })).refused).toBe(
+      'name or storyId is needed to suggest from',
     )
     expect(calls).toEqual([])
   })
